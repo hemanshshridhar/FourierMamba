@@ -2,7 +2,7 @@
 
 ## FourierMamba
 
-Implementation of FourierMamba Block from the <a href="https://arxiv.org/pdf/2405.19450">FourierMamba</a> paper, for image de-raining using State Space Models.
+Unofficial Implementation of FourierMamba Block from the <a href="https://arxiv.org/pdf/2405.19450">FourierMamba</a> paper, for image de-raining using State Space Models.
 
 ## Usage
 
@@ -27,7 +27,7 @@ out = model(x)
 - [ ] reduce time complexity on scanning.
 - [ ] add analysis.
 - [ ] adding a training and evaluation script.
-https://github.com/aSleepyTree/FreqMamba/blob/main/train.py
+
 ## References
 1. [aSleepyTree/FreqMamba](https://github.com/aSleepyTree/FreqMamba)
 
