@@ -547,7 +547,7 @@ class SS2D_Channel(nn.Module):
         return out_y[:, 0], inv_y
 
     def forward(self, x: torch.Tensor, **kwargs):
-        B, 1, 1, C = x.shape
+        B, 13, 1, C = x.shape
 
         xz = self.in_proj(x)
         x, z = xz.chunk(2, dim=-1)
@@ -1056,36 +1056,32 @@ class SS2D_local(nn.Module):
         return D
     def progressivescan(self,mat,flip =False):
         m = mat.size(1)   # number of columns in torch tensor
-        rows = torch.arange(mat.shape[0]).view(-1, 1).expand(A.shape)
-        cols = torch.arange(mat.shape[1]).view(1, -1).expand(A.shape)
 
-        indices = torch.stack((rows, cols), dim=-1)
-        indice1 = indices[:, :m//2]
-        indice2 = indices[:, m//2:]
-        mat = mat.numpy()
+
+        
         mat1 = mat[:, :m//2]   # left half
         mat2 = mat[:, m//2:] 
-        mat2 = np.flipud(mat2)                 # flip rows (up ↔ down)
-        mat1 = np.flipud(mat1.T)               # transpose, then flip rows
+        mat2 = torch.flip(mat2, dim = [-2])                 # flip rows (up ↔ down)
+        mat1 = torch.flip(mat1, dims =[-2, -1]).transpose(-1, -2)            # transpose, then flip rows
     
-        d1, d2,d1_inv, d2_inv = defaultdict(list), defaultdict(list),defaultdict(list), defaultdict(list)
+        d1, d2 = defaultdict(list), defaultdict(list)
     
         rows2, cols2 = mat2.shape   # ✅ use .shape in NumPy
         for i in range(rows2):
             for j in range(cols2):
                 d2[i+j].append(mat2[i, j])
-                d1_inv[i+j].append(indice1[i,j])
+                
         
         rows1, cols1 = mat1.shape
         for i in range(rows1):
             for j in range(cols1):
                 d1[i+j].append(mat1[i, j])
-                d2_inv[i+j].append(indice2[i,j])
+                
 
         r = []
-        r_inv =[]
+        
         r.extend(d1[0])
-        r_inv.extend(d1_inv[0])
+       
         N = rows1 + cols2 - 2
         i, j = 1, 0
         while i <= N or j <= N:
@@ -1093,34 +1089,34 @@ class SS2D_local(nn.Module):
                 if j <= N:
                     if j % 2 == 0:
                         r.extend(d2[j][::-1])
-                        r_inv.extend(d2_inv[j][::-1])
+                        
                     else:
                         r.extend(d2[j])
-                        r_inv.extend(d2_inv[j])
+                       
                     j += 1
             for _ in range(2):
                 if i <= N:
                     if i % 2 == 0:
                         r.extend(d1[i][::-1])
-                        r_inv.extend(d1_inv[i][::-1])
+                        
                     else:
                         r.extend(d1[i])
-                        r_inv.extend(d1_inv[i])
+                        
                     i += 1
-        rd = np.array(r)
-        rd_inv = np.array(r_inv)
+        rd = torch.tensor(r)
+        
         if flip == True:
-            rd = np.flip(rd)
-        # 🔑 Convert Python list → NumPy array
-        return rd,rd_inv
+            rd = torch.flip(rd)
+      
+        return rd
     def BilateralZigzaq(self,mat, flip =False):
         if isinstance(mat, torch.Tensor):
-            mat = mat.detach().cpu().numpy()
+            
             m = mat.shape[1]             # number of columns (NumPy)
             mat1 = mat[:, :m//2]         # left half
             mat2 = mat[:, m//2:]         # right half
-            mat2 = np.flipud(mat2)       # flip rows (up ↔ down)
-            mat1 = np.flipud(mat1.T)     # transpose, then flip rows
+            mat2 = torch.flip(mat2, dim = [-2])                 # flip rows (up ↔ down)
+            mat1 = torch.flip(mat1, dims =[-2, -1]).transpose(-1, -2).contigious()
 
             d1, d2 = defaultdict(list), defaultdict(list)
 
@@ -1144,18 +1140,18 @@ class SS2D_local(nn.Module):
             for k in range(rows2 + cols2 - 1):
                 r.extend(d2[k][::-1] if k % 2 == 0 else d2[k])
             
-            rd = np.array(r)
+            rd = torch.tensor(r)
             if flip == True:
-                rd = np.flip(rd)    
+                rd = torch.flip(rd)    
 
             return rd
     def invert_scan_torch(self,seq_1d, shape_hw, forward_scan_fn, *args, **kwargs):
 
         H, W = shape_hw
         # Build numpy index grid and get order via the scan (works even if scan expects torch; convert if needed)
-        grid = np.arange(H*W).reshape(H, W)
+        grid = torch.arange(H*W).reshape(H, W)
         order = forward_scan_fn(grid, *args, **kwargs)
-        order = np.asarray(order).ravel()
+        order = torch.flatten(order)
         if order.size != H*W:
             raise ValueError("Scan function did not return H*W elements.")
 
@@ -1164,7 +1160,7 @@ class SS2D_local(nn.Module):
             raise ValueError("Sequence length does not match H*W.")
 
         out = torch.empty(H*W, dtype=seq_1d.dtype, device=seq_1d.device)
-        # Scatter using the order mapping
+   
         out[torch.tensor(order, device=seq_1d.device, dtype=torch.long)] = seq_1d
         return out.view(H, W)              
     def local_scan(x, H=14, W=14, w=7, flip=False, column_first=False):
@@ -1229,11 +1225,9 @@ class SS2D_local(nn.Module):
         
         out_y[:,0] = self.invert_scan_torch(out_y[:,0], (H,W), self.progressivescan, flip = False)
         out_y[:,1] = self.invert_scan_torch(out_y[:,1], (H,W), self.BilateralZigzaq, flip = False)
-        wh_y = self.invert_scan_torch(wh_y, (H,W), self.progressivescan, flip = True)
-        inwh_y = self.invert_scan_torch(invwh_y, (H,W), self.BilateralZigzaq, flip = True)
-        ##. now we have unflipped the last 2 sequences 
-        # wh_y = torch.transpose(out_y[:, 1].view(B, -1, W, H), dim0=2, dim1=3).contiguous().view(B, -1, L)
-        # invwh_y = torch.transpose(inv_y[:, 1].view(B, -1, W, H), dim0=2, dim1=3).contiguous().view(B, -1, L)
+        wh_y = self.invert_scan_torch(torch.flip(inv_y[:, 0], dims=[-1]), (H,W), self.progressivescan, flip = True)
+        inwh_y = self.invert_scan_torch(torch.flip(inv_y[:, 1], dims=[-1]), (H,W), self.BilateralZigzaq, flip = True)
+
 
         return out_y[:, 0], out_y[:,1], wh_y, inwh_y
 
@@ -1280,107 +1274,35 @@ class VSSBlock(nn.Module):
         self.ln_2 = nn.LayerNorm(hidden_dim)
         self.ln_3 = norm_layer(hidden_dim)
         self.skip_scale2 = nn.Parameter(torch.ones(hidden_dim))
-
-
-        # self.fpre = nn.Conv2d(hidden_dim, hidden_dim, 1, 1, 0)
-
-
         self.block = nn.Sequential(
             nn.Conv2d(hidden_dim,hidden_dim,1,1,0),
             nn.LeakyReLU(0.1,inplace=True),
             nn.Conv2d(hidden_dim, hidden_dim, 1, 1, 0),
             nn.LeakyReLU(0.1, inplace=True))
-        
 
-        # self.fpre1 = nn.Conv2d(hidden_dim, hidden_dim, 1, 1, 0)
-        # self.block1 = nn.Sequential(
-        #     nn.Conv2d(hidden_dim,hidden_dim,1,1,0),
-        #     nn.LeakyReLU(0.1,inplace=True),
-        #     nn.Conv2d(hidden_dim, hidden_dim, 1, 1, 0),
-        #     nn.LeakyReLU(0.1, inplace=True))
-        # self.linear1 = nn.Linear(hidden_dim,hidden_dim)
-        # self.linear2 = nn.Linear(hidden_dim,hidden_dim)
         self.linear_out = nn.Linear(hidden_dim * 3,hidden_dim)
         self.GAP = nn.AdaptiveAvgPool2d(1,1)
     def forward(self, input, x_size):
         # x [B,HW,C]
-        B, L, C = input.shape
+        B, L, C = input.shape ##. sequence from the previous block
         input = input.view(B, *x_size, C).contiguous()  # [B,H,W,C]
-        # time0 = time.time()
-
+        
+    #========fourier mamba ===================================
         prepare = rearrange(input, "b h w c -> b c h w").contiguous().cuda(device_id0)
         xf = torch.fft.rfft2(prepare) + 1e-8 ##xf is the fourier coeff matrix. this is already in the ssh form
-        print(xf.shape)
-        
-        
-        
-        ##print(xf.shape)
-        h00 = torch.zeros(prepare.shape).float().cuda(device_id0)
-        
-        
-        # xfm = DWTForward(J=2, mode='zero', wave='haar').cuda(device_id0)
-        # ifm = DWTInverse(mode='zero', wave='haar').cuda(device_id0)
-
-        # # time1 = time.time()
-        # # print(time1 - time0,'prepare')
-        # Yl , Yh = xfm(prepare)
-        # # ttime = time.time()
-        # # print(ttime - time0,'wave done')
         # h00 = torch.zeros(prepare.shape).float().cuda(device_id0)
-        # for i in range(len(Yh)):
-        #   if i == len(Yh) - 1:
-        #     h00[:, :, :Yl.size(2), :Yl.size(3)] = Yl
-        #     h00[:, :, :Yl.size(2), Yl.size(3):Yl.size(3) * 2] = Yh[i][:, :, 0, :, :]
-        #     h00[:, :, Yl.size(2):Yl.size(2) * 2, :Yl.size(3)] = Yh[i][:, :, 1, :, :]
-        #     h00[:, :, Yl.size(2):Yl.size(2) * 2, Yl.size(3):Yl.size(3) * 2] = Yh[i][:, :, 2, :, :]
-        #   else:
-        #     h00[:, :, :Yh[i].size(3), Yh[i].size(4):] = Yh[i][:, :, 0, :, :h00.shape[3] - Yh[i].size(4)]
-        #     h00[:, :, Yh[i].size(3):, :Yh[i].size(4)] = Yh[i][:, :, 1, :h00.shape[2] - Yh[i].size(3), :]
-        #     h00[:, :, Yh[i].size(3):, Yh[i].size(4):] = Yh[i][:, :, 2, :h00.shape[2] - Yh[i].size(3), :h00.shape[3] - Yh[i].size(4)]
-        # # # ttime1 = time.time()
-        # # # print(ttime1 - ttime,'swap done')
-        # # # print(h00.shape,'ttt')
-        
-        # h00 = rearrange(h00, "b c h w -> b h w c").contiguous()
-
-        # # print(h00)
-        # # time2 = time.time()
-        # # print(time2 - time1,'wavelet')
-        h11 = self.ln_11(xf)
-        # # print(h11.shape,'h11shape')
+        xf =  rearrange(xf, "b c h w -> b h w c").contiguous()
+        h11 = self.ln_11(xf)    ## h11 shape ----> b,c,h,w
         h11 = xf*self.skip_scale1 + self.drop_path1(self.self_attention1(h11))
-
-        # # time3 = time.time()
-        # # print(time3 - time2,'wavelet scan')
-        h11 = rearrange(h11, "b h w c -> b c h w").contiguous()
-
-        # for i in range(len(Yh)):
-        #   if i == len(Yh) - 1:
-        #     Yl = h11[:, :, :Yl.size(2), :Yl.size(3)] 
-        #     Yh[i][:, :, 0, :, :] = h11[:, :, :Yl.size(2), Yl.size(3):Yl.size(3) * 2] 
-        #     Yh[i][:, :, 1, :, :] = h11[:, :, Yl.size(2):Yl.size(2) * 2, :Yl.size(3)] 
-        #     Yh[i][:, :, 2, :, :] = h11[:, :, Yl.size(2):Yl.size(2) * 2, Yl.size(3):Yl.size(3) * 2] 
-        #   else:
-        #     Yh[i][:, :, 0, :, :h11.shape[3] - Yh[i].size(4)] = h11[:, :, :Yh[i].size(3), Yh[i].size(4):] 
-        #     Yh[i][:, :, 1, :h11.shape[2] - Yh[i].size(3), :] = h11[:, :, Yh[i].size(3):, :Yh[i].size(4)] 
-        #     Yh[i][:, :, 2, :h11.shape[2] - Yh[i].size(3), :h11.shape[3] - Yh[i].size(4)] = h11[:, :, Yh[i].size(3):, Yh[i].size(4):] 
-        # # print(Yl,Yh[1])
-        # Yl = Yl.cuda(device_id0)
-        # temp = ifm((Yl, [Yh[1]]))
-        # recons2 = ifm((temp, [Yh[0]])).cuda(device_id0)
+        
         recons2 = torch.fft.irfft2(h11, s= tuple(x_size), norm='backward')+1e-8
         recons2 = rearrange(recons2, "b c h w -> b h w c").contiguous()
-        # # time4 = time.time()
-        # # print(time4 - time3,'inverse wavelet')
-
-
-
+    #======Spatial Mamba=================================
         x = self.ln_1(input)
-        # print(x.shape,'xshape')
         x = input*self.skip_scale + self.drop_path(self.self_attention(x))
-        # time5 = time.time()
-        # print(time5 - time4,'2D Scan')
-        ##below is the code for channel dimension fft mamaba
+    #=========================================
+    
+    #=======channel mamba ==========================
         xc = self.GAP(prepare).view(B,1,1,C).contiguous() 
         c_fft = torch.fft.rfft(xc, dim=1)+1e-8
         mag = torch.abs(c_fft)
@@ -1396,28 +1318,11 @@ class VSSBlock(nn.Module):
         
         x_out = torch.abs(x_out)+1e-8
         x_out = x_out.view(B, C, 1, 1).contiguous() 
-        x_out= x_out*self.ln_3(xc).view(B,1,1,C).contiguous()
+        # x_out= x_out*self.ln_3(xc).view(B,1,1,C).contiguous()
         x_out = x_out*prepare
         x_out = rearrange(x_out, "b c h w -> b h w c").contiguous()
         
-        # x = x*self.skip_scale2 + self.conv_blk(self.ln_2(x).permute(0, 3, 1, 2).contiguous()).permute(0, 2, 3, 1).contiguous()
-        
-        # x1 = x + self.linear1(x_out)
-        # x_out1 = x_out + self.linear2(x)
-
-        # input_freq1 = torch.fft.rfft2(rearrange(x_out1, "b h w c -> b c h w").contiguous())+1e-8
-        # mag1 = torch.abs(input_freq1)
-        # pha1= torch.angle(input_freq1)
-        # mag1 = self.block(mag1)
-        # real1 = mag1 * torch.cos(pha1)
-        # imag1 = mag1 * torch.sin(pha1)
-        # x_out1 = torch.complex(real1, imag1)+1e-8
-        # x_out1 = torch.fft.irfft2(x_out1, s= tuple(x_size), norm='backward')+1e-8
-        # x_out1 = torch.abs(x_out1)+1e-8
-        # x_out1 = rearrange(x_out1, "b c h w -> b h w c").contiguous()
-
-        # x2 = self.ln_11(x1)
-        # x2 = x1*self.skip_scale1 + self.drop_path1(self.self_attention1(x2))
+    #==================================================================
 
         x = x.view(B, -1, C).contiguous()
         x_out = x_out.view(B, -1, C).contiguous()
@@ -1513,7 +1418,7 @@ class FourierMamba(nn.Module):
                  dual_pixel_task=False  ## True for dual-pixel defocus deblurring only. Also set inp_channels=6
                  ):
 
-        super(FreqMamba, self).__init__()
+        super(FourierMamba, self).__init__()
         self.mlp_ratio = mlp_ratio
         self.patch_embed = OverlapPatchEmbed(inp_channels, dim)
         base_d_state = 4
