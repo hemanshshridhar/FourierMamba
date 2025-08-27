@@ -547,9 +547,9 @@ class SS2D_Channel(nn.Module):
         return out_y[:, 0], inv_y
 
     def forward(self, x: torch.Tensor, **kwargs):
-        B, 13, 1, C = x.shape
+        B, 1, 1, C = x.shape
 
-        xz = self.in_proj(x)
+        xz = self.in_proj(x.view(B, C))
         x, z = xz.chunk(2, dim=-1)
         x = x.permute(0, 3, 1, 2).contiguous()
         x = self.act(self.conv2d(x))
@@ -562,7 +562,7 @@ class SS2D_Channel(nn.Module):
         out = self.out_proj(y)
         if self.dropout is not None:
             out = self.dropout(out)
-        return out
+        return out.view(B,1,1,C)
 class SS2D_map(nn.Module):
     def __init__(
             self,
@@ -1054,9 +1054,10 @@ class SS2D_local(nn.Module):
         D = nn.Parameter(D)  # Keep in fp32
         D._no_weight_decay = True
         return D
-    def progressivescan(self,mat,flip =False):
-        m = mat.size(1)   # number of columns in torch tensor
-
+    def progressivescan(self,H,W,flip =False):
+          # number of columns in torch tensor
+        mat = torch.arange(H * W).reshape(H, W)
+        m = mat.shape[1]    
 
         
         mat1 = mat[:, :m//2]   # left half
@@ -1109,60 +1110,46 @@ class SS2D_local(nn.Module):
             rd = torch.flip(rd)
       
         return rd
-    def BilateralZigzaq(self,mat, flip =False):
-        if isinstance(mat, torch.Tensor):
-            
-            m = mat.shape[1]             # number of columns (NumPy)
-            mat1 = mat[:, :m//2]         # left half
-            mat2 = mat[:, m//2:]         # right half
-            mat2 = torch.flip(mat2, dim = [-2])                 # flip rows (up ↔ down)
-            mat1 = torch.flip(mat1, dims =[-2, -1]).transpose(-1, -2).contigious()
+    def BilateralZigzaq(self,H,W,flip =False):      ##returns the order of scanning
+        mat = torch.arange(H * W).reshape(H, W)
+        m = mat.shape[1]             # number of columns
+        mat1 = mat[:, :m//2]         # left half
+        mat2 = mat[:, m//2:]         # right half
+        mat2 = torch.flip(mat2, dim = [-2])                 # flip rows (up ↔ down)
+        mat1 = torch.flip(mat1, dims =[-2, -1]).transpose(-1, -2).contiguous()
 
-            d1, d2 = defaultdict(list), defaultdict(list)
+        d1, d2 = defaultdict(list), defaultdict(list)
 
-            rows2, cols2 = mat2.shape
-            for i in range(rows2):
-                for j in range(cols2):
-                    d2[i + j].append(mat2[i, j])
+        rows2, cols2 = mat2.shape
+        for i in range(rows2):
+            for j in range(cols2):
+                d2[i + j].append(mat2[i, j])
 
-            rows1, cols1 = mat1.shape
-            for i in range(rows1):
-                for j in range(cols1):
-                    d1[i + j].append(mat1[i, j])
+        rows1, cols1 = mat1.shape
+        for i in range(rows1):
+            for j in range(cols1):
+                d1[i + j].append(mat1[i, j])
 
-            r = []
+        r = []
 
                 # consume all diagonals of mat1
-            for k in range(rows1 + cols1 - 1):
-                r.extend(d1[k][::-1] if k % 2 == 0 else d1[k])
+        for k in range(rows1 + cols1 - 1):
+            r.extend(d1[k][::-1] if k % 2 == 0 else d1[k])
 
                 # then all diagonals of mat2
-            for k in range(rows2 + cols2 - 1):
-                r.extend(d2[k][::-1] if k % 2 == 0 else d2[k])
+        for k in range(rows2 + cols2 - 1):
+            r.extend(d2[k][::-1] if k % 2 == 0 else d2[k])
             
-            rd = torch.tensor(r)
-            if flip == True:
-                rd = torch.flip(rd)    
+        rd = torch.tensor(r)
+        if flip == True:
+            rd = torch.flip(rd)    
 
-            return rd
-    def invert_scan_torch(self,seq_1d, shape_hw, forward_scan_fn, *args, **kwargs):
-
-        H, W = shape_hw
-        # Build numpy index grid and get order via the scan (works even if scan expects torch; convert if needed)
-        grid = torch.arange(H*W).reshape(H, W)
-        order = forward_scan_fn(grid, *args, **kwargs)
-        order = torch.flatten(order)
-        if order.size != H*W:
-            raise ValueError("Scan function did not return H*W elements.")
-
-        seq_1d = seq_1d.reshape(-1)
-        if seq_1d.numel() != H*W:
-            raise ValueError("Sequence length does not match H*W.")
-
-        out = torch.empty(H*W, dtype=seq_1d.dtype, device=seq_1d.device)
-   
-        out[torch.tensor(order, device=seq_1d.device, dtype=torch.long)] = seq_1d
-        return out.view(H, W)              
+        return rd
+    def invert_order(self,order: torch.LongTensor) -> torch.LongTensor:
+    # order maps new_index -> old_index
+        inv = torch.empty_like(order)
+        inv[order] = torch.arange(order.numel(), device=order.device)
+        return inv
     def local_scan(x, H=14, W=14, w=7, flip=False, column_first=False):
       """Local windowed scan in LocalMamba
       Input: 
@@ -1188,11 +1175,20 @@ class SS2D_local(nn.Module):
         B, C, H, W = x.shape
         L = H * W
         K = 4
+        x = x.view(B,-1,L).contiguous()
         ##here we add the ascanning operations #####
-        x1 = self.progressivescan(x,flip = False)
-        x2 = self.BilateralZigzaq(x,flip = False)
-        x3 = self.progressivescan(x,flip = True)
-        x4 = self.BilateralZigzaq(x,flip = True)
+        orderp = self.progressivescan(H,W,flip=False)
+        orderp_inv = self.progressivescan(H,W,flip=True)
+        orderb = self.BilateralZigzaq(H,W,flip=False)
+        orderb_inv = self.BilateralZigzaq(H,W,flip=True)
+        inv_orderp = self.invert_order(orderp)
+        inv_orderb = self.invert_order(orderb)
+        
+        x1 = x[:,:,orderp]
+        x2 = x[:,:,orderb]
+        x3 = x[:,:,orderp_inv]
+        x4 = x[:,:,orderb_inv]
+
         # x1 = self.local_scan(x, H, W, w=H//4)
         # x2 = self.local_scan(x, H, W, w=H//4, column_first = True)
         # x3 = self.local_scan(x, H, W, w=H//4, flip=True)
@@ -1222,13 +1218,10 @@ class SS2D_local(nn.Module):
         assert out_y.dtype == torch.float
         # out_y[:,0] -----> PROGRESSIVE ZIGZAG 
         inv_y = torch.flip(out_y[:, 2:4], dims=[-1]).view(B, 2, -1, L)
-        
-        out_y[:,0] = self.invert_scan_torch(out_y[:,0], (H,W), self.progressivescan, flip = False)
-        out_y[:,1] = self.invert_scan_torch(out_y[:,1], (H,W), self.BilateralZigzaq, flip = False)
-        wh_y = self.invert_scan_torch(torch.flip(inv_y[:, 0], dims=[-1]), (H,W), self.progressivescan, flip = True)
-        inwh_y = self.invert_scan_torch(torch.flip(inv_y[:, 1], dims=[-1]), (H,W), self.BilateralZigzaq, flip = True)
-
-
+        out_y[:, 0] = out_y[:, 0, :, inv_orderp]
+        out_y[:, 1] = out_y[:, 1, :, inv_orderb]
+        wh_y        = inv_y[:, 0, :, inv_orderp]
+        inwh_y      = inv_y[:, 1, :, inv_orderb]
         return out_y[:, 0], out_y[:,1], wh_y, inwh_y
 
     def forward(self, x: torch.Tensor, **kwargs):
@@ -1241,6 +1234,7 @@ class SS2D_local(nn.Module):
         y1, y2, y3, y4 = self.forward_core(x)
         assert y1.dtype == torch.float32
         y = y1 + y2 + y3 + y4
+        y = y.transpose(1, 2).contiguous().view(B, H, W, -1)  # [B,H,W,d_inner]
         y = self.out_norm(y)
         y = y * F.silu(z)
         out = self.out_proj(y)
@@ -1280,11 +1274,11 @@ class VSSBlock(nn.Module):
             nn.Conv2d(hidden_dim, hidden_dim, 1, 1, 0),
             nn.LeakyReLU(0.1, inplace=True))
 
-        self.linear_out = nn.Linear(hidden_dim * 3,hidden_dim)
+        self.linear_out = nn.Linear(hidden_dim * 2,hidden_dim)
         self.GAP = nn.AdaptiveAvgPool2d(1,1)
     def forward(self, input, x_size):
         # x [B,HW,C]
-        B, L, C = input.shape ##. sequence from the previous block
+        B, L, C = input.shape ## assuming we gaet a sequence from the previous block
         input = input.view(B, *x_size, C).contiguous()  # [B,H,W,C]
         
     #========fourier mamba ===================================
@@ -1292,8 +1286,20 @@ class VSSBlock(nn.Module):
         xf = torch.fft.rfft2(prepare) + 1e-8 ##xf is the fourier coeff matrix. this is already in the ssh form
         # h00 = torch.zeros(prepare.shape).float().cuda(device_id0)
         xf =  rearrange(xf, "b c h w -> b h w c").contiguous()
-        h11 = self.ln_11(xf)    ## h11 shape ----> b,c,h,w
-        h11 = xf*self.skip_scale1 + self.drop_path1(self.self_attention1(h11))
+        
+        
+  ## now we split it into magnitude and phase and run the SSM independently
+        mag_xf = torch.abs(xf)
+        pha_xf = torch.angle(xf)
+        
+        h11_xf = self.ln_11(mag_xf)   
+        h11_pha =self.ln_11(pha_xf)
+        
+        h11_xf =  mag_xf*self.skip_scale1 + self.drop_path1(self.self_attention1(h11_xf))
+        h11_pha = pha_xf*self.skip_scale1 + self.drop_path1(self.self_attention1(h11_pha))
+        real_h11 = h11_xf * torch.cos(h11_pha)
+        imag_h11 = h11_xf * torch.sin(h11_pha)
+        h11 = torch.complex(real_h11, imag_h11)+1e-8
         
         recons2 = torch.fft.irfft2(h11, s= tuple(x_size), norm='backward')+1e-8
         recons2 = rearrange(recons2, "b c h w -> b h w c").contiguous()
@@ -1303,11 +1309,11 @@ class VSSBlock(nn.Module):
     #=========================================
     
     #=======channel mamba ==========================
-        xc = self.GAP(prepare).view(B,1,1,C).contiguous() 
-        c_fft = torch.fft.rfft(xc, dim=1)+1e-8
+        xc = self.GAP(prepare).view(B,1,1,C).contiguous() # creates a global vector (center pint of the fourier spectrum(dc component))
+        c_fft = torch.fft.rfft(xc, dim=1)+1e-8  # fourier along the channle dimension
         mag = torch.abs(c_fft)
         pha = torch.angle(c_fft)
-        mag = self.attention2(mag)
+        mag = self.attention2(mag)    #independent channel mmamba on phase and magnitude
         pha = self.attention2(pha)
         
         real = mag * torch.cos(pha)
@@ -1319,34 +1325,53 @@ class VSSBlock(nn.Module):
         x_out = torch.abs(x_out)+1e-8
         x_out = x_out.view(B, C, 1, 1).contiguous() 
         # x_out= x_out*self.ln_3(xc).view(B,1,1,C).contiguous()
-        x_out = x_out*prepare
+        x_out = x_out*prepare   #global vector multiplied with image
         x_out = rearrange(x_out, "b c h w -> b h w c").contiguous()
         
     #==================================================================
 
         x = x.view(B, -1, C).contiguous()
-        x_out = x_out.view(B, -1, C).contiguous()
+       
 
-        # wave trans
-        x_dwt = recons2.view(B, -1, C).contiguous()
+     
+        x_ft = recons2.view(B, -1, C).contiguous()
         
         # # print(x.shape,x_dwt.shape)
         
 
         # wave trans. The shapes may not match slightly due to the wavelet transform
-        if x.shape != x_dwt.shape:
-            x_dwt = x_dwt[:,:x.shape[1],:]
+
 
         # # wave trans
-        x_final = torch.cat((x,x_out,x_dwt),2)
+        x_final = torch.cat((x,x_ft),dim = 2)
         x_final = self.linear_out(x_final)
+        
+        B,_,C_out= x_final.shape
+        xc = self.GAP(x_final).view(B,1,1,C_out).contiguous() # creates a global vector (center pint of the fourier spectrum(dc component))
+        c_fft = torch.fft.rfft(xc, dim=1)+1e-8  # fourier along the channle dimension
+        mag = torch.abs(c_fft)
+        pha = torch.angle(c_fft)
+        mag = self.attention2(mag)    #independent channel mmamba on phase and magnitude
+        pha = self.attention2(pha)
+        
+        real = mag * torch.cos(pha)
+        imag = mag * torch.sin(pha)
+        x_out = torch.complex(real, imag)+1e-8
+        x_out = torch.fft.irfft(x_out, n=x_out.shape[1], dim=1) 
+        # x_out = torch.fft.irfft2(x_out, s= tuple(x_size), norm='backward')+1e-8
+        
+        x_out = torch.abs(x_out)+1e-8
+        x_out = x_out.view(B, C, 1, 1).contiguous() 
+        # x_out= x_out*self.ln_3(xc).view(B,1,1,C).contiguous()
+        x_out = x_out*x_final   #global vector multiplied with image
+        x_out = rearrange(x_out, "b c h w -> b h w c").contiguous()
 
 
         # time6 = time.time()
         # print(time6 - time5,'last')
         # print(time6 - time0,'all')
         # print((time4 - time0)/(time6 - time0),(time6 - time4)/ (time6 - time0))
-        return x_final
+        return x_out
 
 
 ##########################################################################
