@@ -25,8 +25,9 @@ out = model(x)
 ## Todo
 
 - [ ] reduce time complexity on scanning.
-- [ ] add analysis.
+- [ ] add analysis on scanning methods.
 - [ ] adding a training and evaluation script.
+- [ ] Fix shape mismatch in FourierMama class.
 
 ## References
 1. [aSleepyTree/FreqMamba](https://github.com/aSleepyTree/FreqMamba)
