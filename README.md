@@ -1,5 +1,8 @@
 <img src="fourierMamba.png" width="600px"></img>
 
+
+⚠️⚠️⚠️**Repo Under Construction**⚠️⚠️⚠️
+
 ## FourierMamba
 
 Unofficial Implementation of FourierMamba Block from the <a href="https://arxiv.org/pdf/2405.19450">FourierMamba</a> paper, for image de-raining using State Space Models.
@@ -28,6 +31,7 @@ out = model(x)
 - [ ] add analysis on scanning methods.
 - [ ] adding a training and evaluation script.
 - [ ] Fix shape mismatch in FourierMama class.
+
 
 ## References
 1. [aSleepyTree/FreqMamba](https://github.com/aSleepyTree/FreqMamba)
